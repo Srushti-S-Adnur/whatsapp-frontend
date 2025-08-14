@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import API from "../api";
+import axios from "axios";
 
 export default function Register() {
   const [name, setName] = useState("");
@@ -8,17 +8,11 @@ export default function Register() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
-  const handleRegister = async (e) => {
+  const handleRegister = (e) => {
     e.preventDefault();
-    setError("");
-    setMessage("");
-
-    try {
-      await API.post("/api/auth/register", { name, email, password });
-      setMessage("Registered successfully! You can login now.");
-    } catch (err) {
-      setError(err.response?.data?.error || "Registration failed");
-    }
+    axios.post("https://whatsapp-backend-mf5s.onrender.com/api/auth/register", { name, email, password })
+      .then(() => setMessage("Registered successfully! You can login now."))
+      .catch(err => setError(err.response?.data?.error || "Registration failed"));
   };
 
   return (

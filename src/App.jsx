@@ -27,9 +27,9 @@ export default function App() {
   const [typingUser, setTypingUser] = useState(null);
   const [userStatuses, setUserStatuses] = useState({});
 
-  // ---- API & Socket ----
-  const API_URL = "https://whatsapp-backend-mf5s.onrender.com";
-  const [socket, setSocket] = useState(null);
+
+  // ---- Socket ----
+  const socket = io("https://whatsapp-backend-mf5s.onrender.com");
 
   // ---- Auth: restore session & axios headers ----
   useEffect(() => {
@@ -37,19 +37,12 @@ export default function App() {
     if (!token) return;
 
     axios
-      .get(`${API_URL}/api/auth/me`, {
+      .get("https://whatsapp-backend-mf5s.onrender.com/api/auth/me", {
         headers: { Authorization: `Bearer ${token}` },
       })
       .then((res) => {
         setUser(res.data);
         axios.defaults.headers.common["Authorization"] = `Bearer ${token}`;
-
-        // Connect socket after auth
-        const newSocket = io(API_URL, {
-          auth: { token },
-          transports: ["websocket"],
-        });
-        setSocket(newSocket);
       })
       .catch(() => {
         setUser(null);
@@ -64,21 +57,22 @@ export default function App() {
       Notification.requestPermission();
     }
   }, []);
-
   // ---- Emit online status on login ----
-  useEffect(() => {
-    if (socket && user) {
-      socket.emit("userOnline", user._id);
-    }
-  }, [socket, user]);
+useEffect(() => {
+  if (user) {
+    socket.emit("userOnline", user._id);
+  }
+}, [user]);
 
-  // ---- Fetch conversations ----
+
+  // ---- Fetch conversations with unread counts ----
   useEffect(() => {
-    if (!user) return;
+    const token = localStorage.getItem("token");
+    if (!token) return;
 
     axios
-      .get(`${API_URL}/api/messages`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+      .get("https://whatsapp-backend-mf5s.onrender.com/api/messages", {
+        headers: { Authorization: `Bearer ${token}` },
       })
       .then((res) => {
         const list = res.data || [];
@@ -100,39 +94,41 @@ export default function App() {
         }
       })
       .catch((err) => console.error(err));
-  }, [convSearch, messages, user]);
+  }, [convSearch, messages]);
 
   // ---- Fetch messages for selected conversation ----
-  useEffect(() => {
-    if (!selectedUser) return;
+ useEffect(() => {
+  if (!selectedUser) return;
+  const token = localStorage.getItem("token");
 
-    const token = localStorage.getItem("token");
-    const endpoint = selectedUser.isGroup
-      ? `${API_URL}/api/messages/group/${selectedUser._id}`
-      : `${API_URL}/api/messages/${selectedUser._id}`;
+  // Fetch messages for group or normal conversation
+  const endpoint = selectedUser.isGroup
+    ? `https://whatsapp-backend-mf5s.onrender.com/api/messages/group/${selectedUser._id}`
+    : `https://whatsapp-backend-mf5s.onrender.com/api/messages/${selectedUser._id}`;
 
-    axios
-      .get(endpoint, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      .then((res) => setMessages(res.data || []))
-      .catch((err) => console.error(err));
+  axios
+    .get(endpoint, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    .then((res) => setMessages(res.data || []))
+    .catch((err) => console.error(err));
 
-    if (!selectedUser.isGroup) {
-      axios.post(
-        `${API_URL}/api/messages/markRead/${selectedUser._id}`,
-        {},
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-    }
-  }, [selectedUser]);
+  // Mark messages as read only for normal chats
+  if (!selectedUser.isGroup) {
+    axios.post(
+      `https://whatsapp-backend-mf5s.onrender.com/api/messages/markRead/${selectedUser._id}`,
+      {},
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+  }
+}, [selectedUser]);
 
-  // ---- Fetch user info ----
+  // ---- Fetch user info for header ----
   useEffect(() => {
     if (!selectedUser || selectedUser.isGroup) return;
     const token = localStorage.getItem("token");
     axios
-      .get(`${API_URL}/api/messages/user/${selectedUser}`, {
+      .get(`https://whatsapp-backend-mf5s.onrender.com/api/messages/user/${selectedUser}`, {
         headers: { Authorization: `Bearer ${token}` },
       })
       .then((res) => setUserInfo(res.data))
@@ -141,15 +137,17 @@ export default function App() {
 
   // ---- Socket listeners ----
   useEffect(() => {
-    if (!socket || !user) return;
+    if (!user) return;
 
+    // New message
     socket.on("newMessage", (message) => {
-      if (message?.wa_id === selectedUser?._id) {
+      if (message?.wa_id === selectedUser) {
         setMessages((prev) => {
           if (message._id && prev.some((m) => m._id === message._id)) return prev;
           return [...prev, message];
         });
       }
+
       if (message.from !== user?.name && Notification.permission === "granted") {
         new Notification("New message", {
           body: message.text || "Media received",
@@ -157,7 +155,16 @@ export default function App() {
         });
       }
     });
-
+ 
+    //group messages
+    if(selectedUser?.isGroup) {
+      socket.on('groupMessage:${selectedUser._id}',
+        (msg) => {
+          setMessages((prev) => [...prev.msg]);
+        }
+      );
+    }
+    // Typing
     socket.on("typing", (data) => {
       if (data.to === user?._id) {
         setTypingUser(data.from);
@@ -170,67 +177,90 @@ export default function App() {
         setIsTyping(false);
       }
     });
+    // ---- Listen for online/offline updates ----
+socket.on("updateUserStatus", ({ userId, status }) => {
+  setUserStatuses(prev => ({ ...prev, [userId]: status }));
+});
 
-    socket.on("updateUserStatus", ({ userId, status }) => {
-      setUserStatuses((prev) => ({ ...prev, [userId]: status }));
-    });
 
-    return () => {
-      socket.off("newMessage");
-      socket.off("typing");
-      socket.off("stopTyping");
-      socket.off("updateUserStatus");
-    };
-  }, [socket, selectedUser, user]);
+    return () => socket.off("newMessage").off("typing").off("stopTyping");
+  }, [selectedUser, user]);
 
-  // ---- Send message ----
+  // ---- Export chat ----
+  const exportChat = () => {
+    if (!messages.length) return;
+    const chatData = messages
+      .map((msg) => {
+        const time = msg.timestamp ? new Date(msg.timestamp).toLocaleString() : "";
+        return `${msg.from}: ${msg.text || ""} (${time})`;
+      })
+      .join("\n");
+
+    const blob = new Blob([chatData], { type: "text/plain" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `${selectedUser}_chat.txt`;
+    link.click();
+  };
+
+  // ---- Send text/media ----
   const sendMessage = () => {
     if (!selectedUser) return;
     if (!newMessage.trim() && !file) return;
 
     const token = localStorage.getItem("token");
 
-    if (selectedUser.isGroup) {
-      axios
-        .post(
-          `${API_URL}/api/messages/sendGroup`,
-          { groupId: selectedUser._id, from: user.name, text: newMessage },
-          { headers: { Authorization: `Bearer ${token}` } }
-        )
-        .then(() => setNewMessage(""))
-        .catch(console.error);
+    //send group messages
+    if(selectedUser.isGroup)
+    {
+      axios.post(
+        'https://whatsapp-backend-mf5s.onrender.com/api/messages/sendGroup',
+        {
+          groupId: selectedUser._id,
+          from: user.name,
+          text: newMessage
+        },
+        {
+          headers: {Authorization: `Bearer ${token}`}
+        }
+      );
+      setNewMessage("");
       return;
     }
 
     const url = file
-      ? `${API_URL}/api/messages/sendMedia`
-      : `${API_URL}/api/messages/send`;
+      ? "https://whatsapp-backend-mf5s.onrender.com/api/messages/sendMedia"
+      : "https://whatsapp-backend-mf5s.onrender.com/api/messages/send";
 
     let request;
     if (file) {
       const formData = new FormData();
-      formData.append("wa_id", selectedUser._id);
-      formData.append("from", user.name);
+      formData.append("wa_id", selectedUser);
+      formData.append("from", user?.name || "You");
+      formData.append("to", selectedUser);
       formData.append("text", newMessage);
       formData.append("file", file);
       request = axios.post(url, formData, {
-        headers: { "Content-Type": "multipart/form-data", Authorization: `Bearer ${token}` },
+        headers: { "Content-Type": "multipart/form-data" },
       });
     } else {
-      request = axios.post(
-        url,
-        { wa_id: selectedUser._id, from: user.name, text: newMessage },
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
+      const payload = {
+        wa_id: selectedUser,
+        from: user?.name || "You",
+        to: selectedUser,
+        text: newMessage,
+      };
+      request = axios.post(url, payload);
     }
 
     request
       .then(() => {
         setNewMessage("");
         setFile(null);
-        socket.emit("stopTyping", { from: user._id, to: selectedUser._id });
+        // Stop typing after send
+        socket.emit("stopTyping", { from: user?._id, to: selectedUser });
       })
-      .catch(console.error);
+      .catch((err) => console.error(err));
   };
 
   const handleKeyDown = (e) => {
@@ -240,7 +270,28 @@ export default function App() {
     }
   };
 
-  // ---- Auth UI ----
+  const handleNewGroup = () => {
+  const groupName = prompt("Enter group name:");
+  if (!groupName) return;
+
+  // Step 3: Ask user to select members
+  const selectedMembers = prompt("Enter member IDs (comma-separated):");
+  const membersArray = selectedMembers ? selectedMembers.split(",").map(m => m.trim()) : [];
+
+  const token = localStorage.getItem("token");
+  axios.post("https://whatsapp-backend-mf5s.onrender.com:/api/groups", {
+    name: groupName,
+    members: membersArray
+  }, {
+    headers: { Authorization: `Bearer ${token}` }
+  }).then(res => {
+    alert("Group created! Refresh conversation list.");
+  });
+};
+
+
+
+  // ---- Auth gate ----
   if (!user) {
     return (
       <div className="h-screen w-full flex items-center justify-center">
@@ -257,15 +308,27 @@ export default function App() {
     );
   }
 
-  // ---- Main Chat UI ----
+  // ---- Chat UI ----
   return (
     <div className="h-screen flex">
-      {/* Sidebar */}
+      {/* Left Sidebar */}
       <div className="w-1/3 bg-gray-100 border-r overflow-y-auto flex flex-col">
         <div className="p-4 font-bold text-lg flex items-center justify-between">
           <span>Conversations</span>
           <span className="text-xs text-gray-500">Hi, {user.name}</span>
         </div>
+             
+             {/* ✅ New Group Button */}
+        <button
+          className="w-full p-2 bg-blue-500 text-white rounded mb-2"
+          onClick={handleNewGroup}
+        >
+          + New Group
+        </button>
+
+ 
+        
+
         <input
           type="text"
           placeholder="Search chats..."
@@ -273,15 +336,16 @@ export default function App() {
           value={convSearch}
           onChange={(e) => setConvSearch(e.target.value)}
         />
+
         <div className="flex-1 overflow-auto">
           {conversations.map((conv) => (
             <div
               key={conv._id}
               className={`p-4 border-b cursor-pointer ${
-                selectedUser?._id === conv._id ? "bg-gray-300" : "hover:bg-gray-200"
+                selectedUser === conv._id ? "bg-gray-300" : "hover:bg-gray-200"
               }`}
               onClick={() => {
-                setSelectedUser(conv);
+                setSelectedUser(conv._id);
                 setMessageSearch("");
               }}
             >
@@ -302,17 +366,19 @@ export default function App() {
         </div>
       </div>
 
-      {/* Chat Pane */}
+      {/* Right Pane */}
       <div className="flex-1 flex flex-col">
         {selectedUser ? (
           <>
-            {/* Header */}
             <div className="p-4 bg-gray-200 border-b flex justify-between items-center">
               <div className="flex flex-col">
-                <span>{userInfo?.name || selectedUser.name || "Unknown"}</span>
+                <span>{userInfo?.name || "Unknown"}</span>
                 <span className="text-sm text-gray-600">
-                  {userStatuses[userInfo?._id] === "online" ? "Online" : "Offline"}
-                </span>
+  {userStatuses[userInfo?._id] === "online" ? "Online" : "Offline"}
+</span>
+
+                  
+                
                 {isTyping && <span className="text-green-600 text-sm">Typing...</span>}
               </div>
               <div className="flex items-center gap-2">
@@ -323,10 +389,15 @@ export default function App() {
                   value={messageSearch}
                   onChange={(e) => setMessageSearch(e.target.value)}
                 />
+                <button
+                  onClick={exportChat}
+                  className="bg-blue-500 text-white px-3 py-1 rounded text-sm"
+                >
+                  Export
+                </button>
               </div>
             </div>
 
-            {/* Messages */}
             <div className="flex-1 overflow-y-auto p-4 space-y-2">
               {messages
                 .filter((msg) =>
@@ -345,7 +416,7 @@ export default function App() {
                   else if (msg.status === "delivered") StatusIcon = <BsCheckAll className="inline text-gray-500" />;
                   else if (msg.status === "read") StatusIcon = <BsCheckAll className="inline text-blue-500" />;
 
-                  const isIncoming = msg.from === selectedUser._id;
+                  const isIncoming = msg.from === selectedUser;
 
                   return (
                     <div
@@ -356,21 +427,14 @@ export default function App() {
                     >
                       {msg.mediaUrl ? (
                         msg.mediaType?.startsWith("image/") ? (
-                          <img
-                            src={`${API_URL}${msg.mediaUrl}`}
-                            alt=""
-                            className="max-w-xs rounded-lg"
-                          />
+                          <img src={`https://whatsapp-backend-mf5s.onrender.com${msg.mediaUrl}`} alt="" className="max-w-xs rounded-lg" />
                         ) : msg.mediaType?.startsWith("video/") ? (
                           <video controls className="max-w-xs rounded-lg">
-                            <source
-                              src={`${API_URL}${msg.mediaUrl}`}
-                              type={msg.mediaType}
-                            />
+                            <source src={`https://whatsapp-backend-mf5s.onrender.com${msg.mediaUrl}`} type={msg.mediaType} />
                           </video>
                         ) : (
                           <a
-                            href={`${API_URL}${msg.mediaUrl}`}
+                            href={`https://whatsapp-backend-mf5s.onrender.com${msg.mediaUrl}`}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="text-blue-500 underline"
@@ -381,6 +445,7 @@ export default function App() {
                       ) : (
                         <span>{msg.text}</span>
                       )}
+
                       <div className="text-xs text-gray-500 self-end flex items-center gap-1 mt-1">
                         {time} {!isIncoming && StatusIcon}
                       </div>
@@ -389,21 +454,9 @@ export default function App() {
                 })}
             </div>
 
-            {/* Message Input */}
             <div className="p-4 border-t flex gap-2 items-center">
-              <input
-                type="file"
-                onChange={(e) => setFile(e.target.files?.[0] || null)}
-                className="hidden"
-                id="fileUpload"
-              />
-              <label
-                htmlFor="fileUpload"
-                className="bg-gray-300 px-3 py-2 rounded-lg cursor-pointer select-none"
-                title="Attach file"
-              >
-                📎
-              </label>
+              <input type="file" onChange={(e) => setFile(e.target.files?.[0] || null)} className="hidden" id="fileUpload" />
+              <label htmlFor="fileUpload" className="bg-gray-300 px-3 py-2 rounded-lg cursor-pointer select-none" title="Attach file">📎</label>
 
               <input
                 type="text"
@@ -412,30 +465,24 @@ export default function App() {
                 value={newMessage}
                 onChange={(e) => {
                   setNewMessage(e.target.value);
-                  socket.emit("typing", { from: user?._id, to: selectedUser._id });
+                  socket.emit("typing", { from: user?._id, to: selectedUser });
                   clearTimeout(window.typingTimeout);
                   window.typingTimeout = setTimeout(() => {
-                    socket.emit("stopTyping", { from: user?._id, to: selectedUser._id });
+                    socket.emit("stopTyping", { from: user?._id, to: selectedUser });
                   }, 1000);
                 }}
                 onKeyDown={handleKeyDown}
               />
 
-              <button
-                onClick={sendMessage}
-                className="bg-green-500 text-white px-4 py-2 rounded-lg"
-              >
+              <button onClick={sendMessage} className="bg-green-500 text-white px-4 py-2 rounded-lg">
                 Send
               </button>
             </div>
           </>
         ) : (
-          <div className="flex-1 flex items-center justify-center text-gray-400">
-            Select a conversation
-          </div>
+          <div className="flex-1 flex items-center justify-center text-gray-400">Select a conversation</div>
         )}
       </div>
     </div>
   );
 }
-
