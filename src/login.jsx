@@ -8,7 +8,7 @@ export default function Login({ setUser }) {
 
   const handleLogin = (e) => {
     e.preventDefault();
-    axios.post("http://localhost:5000/api/auth/login", { email, password })
+    axios.post("https://whatsapp-backend-mf5s.onrender.com/api/auth/login", { email, password })
       .then(res => {
         localStorage.setItem("token", res.data.token);
         setUser(res.data.user);

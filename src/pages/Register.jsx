@@ -10,7 +10,7 @@ export default function Register() {
 
   const handleRegister = (e) => {
     e.preventDefault();
-    axios.post("http://localhost:5000/api/auth/register", { name, email, password })
+    axios.post("https://whatsapp-backend-mf5s.onrender.com/api/auth/register", { name, email, password })
       .then(() => setMessage("Registered successfully! You can login now."))
       .catch(err => setError(err.response?.data?.error || "Registration failed"));
   };
