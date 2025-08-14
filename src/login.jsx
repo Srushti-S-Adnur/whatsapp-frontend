@@ -6,14 +6,31 @@ export default function Login({ setUser }) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
 
-  const handleLogin = (e) => {
+  // 1. Environment-based API URL
+  const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000";
+
+  const handleLogin = async (e) => {
     e.preventDefault();
-    axios.post("https://whatsapp-backend-mf5s.onrender.com/api/auth/login", { email, password })
-      .then(res => {
-        localStorage.setItem("token", res.data.token);
-        setUser(res.data.user);
-      })
-      .catch(err => setError(err.response?.data?.error || "Login failed"));
+    try {
+      // 2. withCredentials optional if using cookies (you can remove if not needed)
+      const res = await axios.post(
+        `${API_BASE}/api/auth/login`,
+        { email, password },
+        { withCredentials: true }
+      );
+      
+      localStorage.setItem("token", res.data.token);
+      setUser(res.data.user);
+    } catch (err) {
+      // 4. Better error handling
+      if (err.response) {
+        setError(err.response.data?.error || "Login failed");
+      } else if (err.request) {
+        setError("Server unreachable. Please check your connection.");
+      } else {
+        setError("An unexpected error occurred.");
+      }
+    }
   };
 
   return (
